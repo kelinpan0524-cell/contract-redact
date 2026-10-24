@@ -1,0 +1,17 @@
+{
+  "extra_orgs": ["星海集团", "星海实业有限公司"],
+  "extra_customers": ["ACME", "NORTHWIND"],
+  "extra_people": ["陈志远"],
+  "aliases": {
+    "星海集团": ["星海", "星海实业", "星海控股"]
+  },
+  "keep": [
+    "市仲裁委员会",
+    "中国工商银行",
+    "中国建设银行",
+    "TÜV SÜD",
+    "CQC",
+    "CNAS",
+    "ISO 9001"
+  ]
+}

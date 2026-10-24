@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+tests/*.docx
+tests/*.doc
+tests/*.pdf
+tests/*.xlsx
+tests/*.xlsm
+tests/*.md
+tests/*.json
+.mimosa/
+
+# 脱敏产物含原文，永不入库
+*.map.json
+*.candidates.json
+
+# 飞书多维表格导出的原始数据（含真实业务信息，永不入库）
+/*.ndjson
+/*.manifest.json
