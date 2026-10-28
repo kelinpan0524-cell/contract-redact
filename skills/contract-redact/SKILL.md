@@ -28,26 +28,40 @@ metadata:
 
 ## Prerequisites
 
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt      # 按系统自动选依赖（含 OCR）
-```
+**装命令行（三种人三种装法，任选其一）**
+
+| 谁 | 怎么装 | 结果 |
+| --- | --- | --- |
+| 自己用 / 换机 | `pipx install git+https://github.com/kelinpan0524-cell/contract-redact` | 系统里多一个 `contract-redact` 命令，隔离环境不污染系统 |
+| 同事 / 团队 | `git clone` 仓库 → 跑一次 `./install.sh` | 技能软链到 AI 目录 + 建好虚拟环境 |
+| 只想看效果 | 看仓库 `examples/` 里的脱敏前后对照 | 不用装 |
+
+未安装时，在仓库目录里用虚拟环境跑：`python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt`。
 
 - `.doc` 转换：macOS 自带 `textutil`；Linux / Windows 需要 LibreOffice。
 - 扫描件 OCR：macOS 用系统 Vision（零下载）；其它系统装 `rapidocr-onnxruntime`。
+- 下文命令统一写 `contract-redact <子命令>`；没装命令行时把 `contract-redact` 换成 `python3 redact_cli.py`。
 
 ## How to Run
 
+子命令只有四个：`redact`（脱敏）、`restore`（还原）、`check`（自检）、`serve`（本地服务）。
+
 ```bash
 # 可逆：代号版 + 映射表
-python redact.py 合同.docx -o 合同_脱敏.docx
-python restore.py 合同_脱敏.docx --map 合同_脱敏.map.json -o 合同_还原.docx
+contract-redact redact 合同.docx -o 合同_脱敏.docx
+contract-redact restore 合同_脱敏.docx --map 合同_脱敏.map.json -o 合同_还原.docx
 
 # 掩码：留首尾打星，不生成映射表
-python redact.py 合同.pdf -o 合同_对外.pdf --mask-only
+contract-redact redact 合同.pdf -o 合同_对外.pdf --mask-only
 
 # 带客户/供应商名单，并给映射表加密
-python redact.py 合同.docx -o 合同_脱敏.docx --config vocab.json --passphrase '口令'
+contract-redact redact 合同.docx -o 合同_脱敏.docx --config vocab.json --passphrase '口令'
+
+# 自检（脱敏之后必跑）：0=干净，2=有残留，1=跑不起来
+contract-redact check 合同_脱敏.docx
+
+# 本地服务：给别的程序调用，规则没加载好就拒绝返回，不发原文
+contract-redact serve --port 8791
 ```
 
 ## Quick Reference
@@ -62,18 +76,24 @@ python redact.py 合同.docx -o 合同_脱敏.docx --config vocab.json --passphr
 | 候选词回收 | `--candidates 候选.json`，再 `tools/merge_candidates.py` 并入 |
 | 不写审计 | `--no-audit` |
 | 指定 OCR | `--ocr-engine vision\|rapidocr` |
+| 记账文件（不含原文） | `--audit-json 审计.json` |
+| 起服务 | `serve --port 8791`，会话落盘加 `--session-file 路径` |
+| 自检退出码 | 0 干净 / 2 有残留或没能自检 / 1 跑不起来 |
 
 ## Procedure
 
 1. **选模式**：要还原→默认；对外不回收→`--mask-only`。完成标准：能一句话说清这版能不能还原。
 2. **确认格式**：docx/doc/pdf/xlsx/md/txt 直接跑；扫描件先说明「走 OCR，版式会变」。
    完成标准：扩展名在支持列表内，或已明确告知不支持。
-3. **跑脱敏**：命中统计会打印出来。完成标准：输出文件存在，报告里有各类命中数。
+3. **跑脱敏**：结束时会打印一行命中统计（如「公司名 6，人名 4，电话 4（合计 22 处）」）。
+   完成标准：输出文件存在，命中统计非空；一处都没命中要当异常查（可能格式或规则没吃到）。
 4. **读报告**：批注、修订、页眉页脚命中、文档属性里的作者/公司；扫描件另有版式提醒。
    完成标准：每条提醒都转述给用户，不吞掉。
-5. **人工复核**：搜甲乙方真名、法人姓名、手机号；删批注、定了修订；看页眉页脚、文本框、附件、图片。
+5. **跑自检**：`contract-redact check 脱敏件`。退出码 2（有残留）或 1（跑不起来）**一律不许外发**，先回去补规则或人工遮。
+   完成标准：退出码 0，且报告里的命中统计为空。
+6. **人工复核**：搜甲乙方真名、法人姓名、手机号；删批注、定了修订；看页眉页脚、文本框、附件、图片。
    完成标准：用户明确说「看过了」或「可以发」。
-6. **交付**：只发脱敏件；映射表和候选词文件留在本机。还原后看恢复报告（哪些代号没用上、有没有陌生代号）。
+7. **交付**：只发脱敏件；映射表和候选词文件留在本机。还原后看恢复报告（哪些代号没用上、有没有陌生代号）。
 
 ## Pitfalls
 
@@ -84,10 +104,16 @@ python redact.py 合同.docx -o 合同_脱敏.docx --config vocab.json --passphr
 - **简称与全称**：词表里只有「星海」时，「芜湖星海精密制造有限公司」会自动扩成完整主体；字不一样的（和田、拼音）不硬认，进候选清单。
 - **还原按词表规范写法回填**：一个代号只存一份原文。
 - **金额/单价/比例/条款号默认不动**：合同审查要看这些。
+- **自检不是安全证明**：`check` 是拿同一套规则再跑一遍，规则本身认不出的（拼音、无标签姓名、图片里的字）它也发现不了。它能证明"没漏掉已知类别"，不能证明"绝对安全"。
+- **没有 OCR 引擎时 PDF 会退出 2**：报"未能自检"就代表没查完，不是干净；要么装 OCR，要么人工过一遍图片页。
+- **`serve` 没有鉴权**：只许监听本机，改成对外监听就是给内网开了个脱敏服务，别这么干。
 
 ## Verification
 
 ```bash
+python tests/check_cli.py      # 四个子命令的参数与退出码
+python tests/check_check.py    # 自检：真残留能抓到、代号不误报、输出不含原文
+python tests/check_serve.py    # 服务：fail-closed、会话一致性、还原
 python tests/check.py          # docx：无残留 / 金额不动 / 还原逐字一致
 python tests/check_multi.py    # 六种输入（含扫描件）脱敏 + 还原
 python tests/check_modes.py    # 规则开关 / 掩码 / 口令 / 恢复报告 / 审计

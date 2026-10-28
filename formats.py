@@ -54,9 +54,12 @@ class CodeBook:
         self.map: dict[tuple[str, str], str] = {}
         self.used: dict[str, int] = {}
         self.seen: set[tuple[str, str]] = set()
+        # 替换处数（同一实体出现几次算几处），和 docx 主流程的 hits 口径一致
+        self.hits: dict[str, int] = {}
 
     def token(self, group: str, value: str) -> str:
         self.seen.add((group, value))
+        self.hits[group] = self.hits.get(group, 0) + 1
         if redact.MASK_ONLY:
             return mask_value(value)
         key = (group, value)
@@ -356,6 +359,14 @@ def redact_any(
     counts: dict[str, int] = {}
     for (group, _value) in book.seen:
         counts[group] = counts.get(group, 0) + 1
+    redact.record_run(
+        source=src,
+        output=out,
+        mode="mask-only" if redact.MASK_ONLY else "reversible",
+        hits=book.hits,
+        entities=counts,
+        mapping=mapping,
+    )
     for group, count in sorted(counts.items()):
         lines.append("  %s：%d 个实体" % (GROUP_LABELS.get(group, group), count))
     if not counts:
