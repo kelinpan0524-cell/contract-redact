@@ -43,6 +43,9 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt      # 按系统自动装对应依赖
 ```
 
+> 想一条命令装好（虚拟环境 + `contract-redact` 命令行 + 技能软链）：`./install.sh`。
+> 自己用（pipx）、同事装（clone + `install.sh`）、只看效果，三种装法与验证命令见 [INSTALL.md](INSTALL.md)。
+
 ```bash
 # 1. 脱敏（格式自动识别）
 python redact.py 采购合同.docx -o 采购合同_脱敏.docx
@@ -71,6 +74,98 @@ python restore.py 采购合同_脱敏.docx --map 采购合同_脱敏.map.json -o
 | `采购合同_脱敏.docx` | 唯一可以发出去的版本 | 发之前按下面清单人工过一遍 |
 | `采购合同_脱敏.map.json` | 代号 ↔ 原文 | **这就是原文**，权限自动设 600，绝不能跟着文件发出去 |
 | `采购合同_脱敏.candidates.json` | 这次没被词表收录的机构名、人名（候选） | 里面也是没遮住的原文，权限自动设 600；确认后并入词表或删掉 |
+
+## 一条命令干四件事：统一入口
+
+`redact.py` 和 `restore.py` 照旧能用；想把脱敏、还原、自检、本地服务收在一个入口里，用 `redact_cli.py`：
+
+```bash
+python redact_cli.py redact  采购合同.docx -o 采购合同_脱敏.docx   # 脱敏
+python redact_cli.py restore 采购合同_脱敏.docx --map 采购合同_脱敏.map.json -o 采购合同_还原.docx
+python redact_cli.py check   采购合同_脱敏.docx                    # 自检
+python redact_cli.py serve                                         # 本地服务
+```
+
+`redact` / `restore` 的参数和直接跑 `redact.py` / `restore.py` 完全一致，只是多了两样东西：结束时打印一行 `hits`，以及可选写审计 JSON。
+
+```
+hits: 公司名 6，人名 4，电话 4，身份证 1，信用代码 2，银行账号 1，地址 3，邮箱 1（合计 22 处）
+```
+
+```bash
+# 同时留一份机器可读的审计记录：按行追加，权限 600，只有元数据和计数，不含原文
+python redact_cli.py redact 合同.docx -o 合同_脱敏.docx --audit-json ~/.contract-redact/runs.jsonl
+```
+
+审计 JSON 一行一次运行，字段：`at`、`source`、`output`、`mode`（`reversible` / `mask-only`）、`rules`、`hits`（各类别替换处数）、`entities`（各类别不同实体数）、`mapping_sha256`（映射表指纹前 16 位）。和 `~/.contract-redact/audit.log` 一样，只记「遮了多少」，不记遮的是什么。
+
+### 自检：check
+
+把已经脱敏的文件再跑一遍同一套规则，看有没有漏网的。**只输出类别、数量和位置（第几段 / 第几页 / 第几行 / 哪个单元格），绝不打印原文**——这份报告本身可以安全地留在电脑里、贴进工单。
+
+```bash
+python redact_cli.py check 合同_脱敏.docx
+python redact_cli.py check 合同_脱敏.pdf            # 扫描件会 OCR 后一起查
+python redact_cli.py check 合同_脱敏.pdf --no-ocr   # 只看文字层，快，但图片里的字不查
+python redact_cli.py check 合同_脱敏.docx --json    # 机器读的输出
+```
+
+```
+命中统计：
+  公司名：1 处
+  电话：2 处
+  合计：3 处 / 3 个位置
+
+残留清单：
+  - 第 2 段（正文）：电话 1 处
+  - 第 5 段（页眉）：公司名 1 处
+```
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 本次检查的范围内没发现残留（`--no-ocr` 跳过的图片不在范围内） |
+| 2 | 发现了残留；或者有位置没能自检（比如 PDF 有图片但没有可用的 OCR） |
+| 1 | 自检根本跑不起来（文件不存在、格式不支持、参数错） |
+
+几个细节：
+
+- 掩码留下的 `星****公司` 和代号 `【公司A】` 不会被当成残留——它们是「已经处理过」的标记，不是原文。
+- PDF 有图片时会 OCR 后逐行检查；给了 `--no-ocr` 则在结果里明确写「图片未检查」，结论写成「没有发现残留（有内容按参数跳过，未自检）」，不会显示「干净」。
+- 自检用的规则、词表、`--only` / `--skip` 应该跟脱敏时保持一致（`--config` 记得带上），否则会出现「脱敏时没遮、自检也不报」的口径错位。
+- 规则本来就是「宁可多报」：OCR 识别错字、长编号被当成银行账号这类误报会出现在清单里，按位置回去看一眼就能判断。
+
+### 本地服务：serve
+
+给别的程序（编辑器插件、脚本、内部工具）调用：
+
+```bash
+python redact_cli.py serve                 # 默认 127.0.0.1:8791，只监听本机
+python redact_cli.py serve --port 9000
+python redact_cli.py serve --session-file ~/.contract-redact/sessions.enc --session-passphrase '口令'
+```
+
+```bash
+curl -s http://127.0.0.1:8791/redact \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"甲方：星海精密制造有限公司 手机：13800000001","mode":"reversible","session":"s1"}'
+# {"text":"甲方：【公司A】 手机：【电话1】","session":"s1","hits":{"company":1,"phone":1}}
+
+curl -s http://127.0.0.1:8791/restore \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"甲方：【公司A】 手机：【电话1】","session":"s1"}'
+# {"text":"甲方：星海精密制造有限公司 手机：13800000001","session":"s1","replaced":2,"unknown_tokens":0}
+```
+
+| 接口 | 请求 | 返回 |
+| --- | --- | --- |
+| `POST /redact` | `{text, mode, session?}`；`mode` 为 `reversible`（默认）或 `mask` | `{text, session, hits}` |
+| `POST /restore` | `{text, session}` | `{text, session, replaced, unknown_tokens}` |
+| `GET /healthz` | — | `{"status":"ok"}`；引擎没加载好时 503 |
+
+- **会话**：同一会话里同一实体永远用同一个代号，新实体往后编号；不同会话互不相干。映射默认只在内存，加 `--session-file` 后用口令加密落盘（scrypt + HMAC，权限 600），重启后还能接着还原。明文会话文件会被直接拒绝——会话映射等于原文。
+- **fail-closed**：规则引擎没加载成功（比如词表写坏了）、处理过程抛异常、请求不合法时，只返回 4xx/5xx 和一句说明，绝不把请求里的原文回显出去。引擎坏掉时 `/redact`、`/restore` 都是 503，响应里没有 `text` 字段。
+- `mask` 模式不可逆：不建会话、不留映射，`session` 返回 `null`；拿它的输出去 `/restore` 会 404。
+- 这是一个本机小服务，**没有鉴权**。默认只听 `127.0.0.1`；改成监听 `0.0.0.0` 时同一网络里的人都能调用，启动时会打印警告。
 
 ## 词表里只有「星海」，合同里写「芜湖星海」，认不认？
 
@@ -127,7 +222,7 @@ python restore.py 合同_脱敏.docx --map 合同_脱敏.map.json --passphrase '
 
 ## 支持哪些平台（跨平台）
 
-**全流程本地、零联网、不调模型。** 代码里没有任何网络请求（`requests`、`urllib`、`http`、`socket` 都没有），也不调用任何 AI 模型或云端 API；断网也能跑。数字、金额、条款号靠格式和校验位识别，不需要联网理解语义。
+**全流程本地、零联网、不调模型。** 脱敏、还原、自检都不发任何网络请求，也不调用任何 AI 模型或云端 API；断网也能跑。唯一的网络相关代码是 `serve` 的本地 HTTP 服务：它只在本机监听 127.0.0.1 接请求，不会主动向外发任何数据。数字、金额、条款号靠格式和校验位识别，不需要联网理解语义。
 
 功能三端一致：`.docx` `.doc` `.pdf` `.xlsx` `.md` `.txt` 全都能脱敏和还原，扫描件也都能 OCR。差别只在用哪套引擎。
 
@@ -275,6 +370,18 @@ python restore.py 采购合同_脱敏.docx --map 采购合同_脱敏.map.json -o
 python tools/merge_candidates.py 采购合同_脱敏.candidates.json --config vocab.json
 ```
 
+统一入口的子命令参数（其余选项见上面「一条命令干四件事」）：
+
+```bash
+python redact_cli.py redact  <输入> [--audit-json 审计.jsonl]      # 其余参数同 redact.py
+python redact_cli.py restore <输入> --map 映射表.json              # 参数同 restore.py
+python redact_cli.py check   <输入> [--config 词表.json] [--only ...] [--skip ...]
+                             [--no-ocr] [--ocr-engine vision|rapidocr] [--json]
+python redact_cli.py serve   [--host 127.0.0.1] [--port 8791] [--config 词表.json]
+                             [--only ...] [--skip ...]
+                             [--session-file 会话.enc --session-passphrase 口令]
+```
+
 ## 会自动识别什么
 
 | 类别 | 代号 | 怎么认出来的 |
@@ -341,6 +448,8 @@ python tools/merge_candidates.py 采购合同_脱敏.candidates.json --config vo
 
 任何格式都可能漏：PDF 的 OCR 有识别误差，扫描件版式会变，`.doc` 转换后排版也可能有细微差异。外发前一律人工复核。
 
+自检（`check`）只是「同一套规则再跑一遍」，它能发现规则认得的漏网之鱼，但规则本身认不出的东西它也发现不了（拼音、无标签姓名、图片里的字）。PDF 有图片又没有可用 OCR 时，它会明确写「未能自检」并返回非零，不会假装干净。
+
 ## 外发前必须人工过一遍
 
 - [ ] Word 里搜甲方/乙方真名、法人姓名、手机号，确认没有残留
@@ -353,7 +462,7 @@ python tools/merge_candidates.py 采购合同_脱敏.candidates.json --config vo
 ## 常见问题
 
 **会不会把合同传到网上？**
-不会。代码里没有任何网络请求，`requests`、`urllib`、`http`、`socket` 一个都没有，断网也能跑。唯一的依赖是本地读写 docx 的库。候选词收集也只在本机做规则判断，不调模型、不发请求。
+不会。脱敏、还原、自检都在本机完成，不发任何网络请求，断网也能跑；也不调用任何 AI 模型或云端 API。唯一跟网络沾边的是 `serve`：它是**本机服务**，只监听 127.0.0.1 等别人来调，不会主动往外发数据。候选词收集也只在本机做规则判断，不调模型、不发请求。
 
 **候选词文件能发出去吗？**
 不能。它和映射表一样，里面是没遮住的原始名称。权限自动设 600，确认完尽快用 `tools/merge_candidates.py` 并入词表，或者直接删掉。
@@ -375,6 +484,9 @@ PDF 里没有文字层的页面，会自动用本机 OCR 识别：macOS 用系�
 ```
 redact.py                       脱敏主程序（docx 主流程 + 其它格式分发）
 restore.py                      按映射表还原
+redact_cli.py                   统一入口：redact / restore / check / serve
+checker.py                      脱敏自检：再跑一遍规则，只报类别和位置
+service.py                      本地 HTTP 服务（fail-closed，会话可加密落盘）
 formats.py                      pdf / xlsx / md / txt 的读写与还原
 candidates.py                   候选词收集与敏感文件写入（权限 600）
 tools/sync_terms.py             从 CSV/JSON 同步客户、供应商名单进词表
@@ -389,8 +501,15 @@ tests/make_sample_multi.py      生成 md / xlsx / pdf / 扫描件 / doc 样例
 tests/check_multi.py            多格式验收：逐格式跑一遍脱敏与还原（扫描件用 OCR 回读核对）
 tests/check_sync.py             词表同步验收：新增并入、别名、手写项不丢、重复跑不重复
 tests/check_candidates.py       候选闭环验收：发现 → 合并 → 再脱敏
+tests/check_cli.py              统一入口验收：子命令、hits、审计 JSON、参数透传
+tests/check_check.py            自检验收：干净→0、残留→2、输出里没有原文
+tests/check_serve.py            服务验收：接口、会话、加密落盘、fail-closed
 tests/check_skill.py            技能自检：frontmatter、篇幅、相对链接、无本机路径
 requirements.txt                按系统自动挑依赖（含跨平台 OCR）
+pyproject.toml                  打包配置：console_scripts 入口 contract-redact
+install.sh                      一条命令安装：venv + 依赖 + 命令行 + 技能软链 + 自检
+INSTALL.md                      三种装法与各自的验证命令
+data/                           随包分发的只读数据（内置词表等）
 ```
 
 ## 开发
@@ -402,16 +521,23 @@ python tests/make_sample_multi.py  # 生成 md / xlsx / pdf / doc 样例
 python tests/check_multi.py        # 每种格式都跑一遍脱敏 + 还原
 python tests/check_sync.py         # 词表同步：只增不减、别名合并、重复跑不重复
 python tests/check_candidates.py   # 候选词：发现、预览、合并、再脱敏闭环
+python tests/check_cli.py          # 统一入口：子命令、hits 摘要、审计 JSON、参数透传
+python tests/check_check.py        # 自检：干净→0、残留→2、输出绝不含原文
+python tests/check_serve.py        # 本地服务：接口、会话复用、加密落盘、fail-closed
 python tests/check_skill.py        # 技能文档自检（改过 SKILL.md / references 后跑）
 ```
 
-三项核心断言：脱敏件里搜不到任何原文、金额与条款号原样保留、还原后与原文逐字一致；候选闭环另外验证权限 600 和「合并后不再产生候选」。
+三项核心断言：脱敏件里搜不到任何原文、金额与条款号原样保留、还原后与原文逐字一致；候选闭环另外验证权限 600 和「合并后不再产生候选」；自检验证「干净退出 0、残留退出 2、只报位置不报原文」；服务验证「引擎或处理失败一律 503、响应里没有原文」。
 
 ## 技能怎么装
 
 `skills/contract-redact/` 是给 AI 助手看的那一层：`SKILL.md` 只讲「什么时候用、按什么顺序做、哪些不能做」，细节拆进 `references/`，按需加载，避免一上来塞满上下文。
 
 ```bash
+# 一条命令：装命令行 + 软链技能（~/.hermes/skills、~/.claude/skills 存在才链）
+./install.sh
+
+# 或者手动复制
 # Claude Code / 支持 skills 的助手
 mkdir -p ~/.claude/skills && cp -R skills/contract-redact ~/.claude/skills/
 

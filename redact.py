@@ -793,6 +793,54 @@ def assign_codes(plans) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# 运行统计：给 redact_cli.py 打印 hits 摘要、写审计 JSON 用
+# ---------------------------------------------------------------------------
+
+# 最近一次成功运行留下的元数据（只有数量与指纹，没有原文）。
+LAST_RUN: dict[str, object] = {}
+
+
+def count_matches(plans) -> tuple[dict[str, int], dict[str, int]]:
+    """返回 (hits, entities)：hits 是各类别替换处数，entities 是不同取值个数。"""
+    hits: dict[str, int] = {}
+    values: dict[str, set[str]] = {}
+    for plan in plans:
+        for match in plan.matches:
+            hits[match.group] = hits.get(match.group, 0) + 1
+            values.setdefault(match.group, set()).add(match.value)
+    return hits, {group: len(items) for group, items in values.items()}
+
+
+def record_run(
+    *,
+    source: str,
+    output: str,
+    mode: str,
+    hits: dict[str, int],
+    entities: dict[str, int],
+    mapping: dict | None = None,
+) -> None:
+    """记下这一次运行的元数据；写审计 JSON 时直接取这份数据。"""
+    import hashlib
+
+    LAST_RUN.clear()
+    LAST_RUN.update(
+        {
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": os.path.abspath(source),
+            "output": os.path.abspath(output),
+            "mode": mode,
+            "rules": sorted(ENABLED_GROUPS) if ENABLED_GROUPS is not None else "all",
+            "hits": dict(hits),
+            "entities": dict(entities),
+            "mapping_sha256": hashlib.sha256(
+                json.dumps(mapping or {}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:16] if mapping else None,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
 # 文档属性
 # ---------------------------------------------------------------------------
 
@@ -1240,6 +1288,10 @@ def main(argv: list[str] | None = None) -> int:
         print("提示：.doc 已转为 .docx 处理，输出是 .docx，排版可能有细微差异。")
         code = main(forwarded)
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        if code == 0 and LAST_RUN:
+            # 递归那层记的是临时 docx，对外要显示用户自己的文件
+            LAST_RUN["source"] = source
+            LAST_RUN["output"] = output
         return code
 
     if ext != ".docx":
@@ -1282,6 +1334,16 @@ def main(argv: list[str] | None = None) -> int:
         from mapping_crypto import save_mapping
 
         save_mapping(map_path, mapping, passphrase)
+
+    hits, entities = count_matches(plans)
+    record_run(
+        source=source,
+        output=output,
+        mode="mask-only" if MASK_ONLY else "reversible",
+        hits=hits,
+        entities=entities,
+        mapping=mapping,
+    )
 
     if not args.no_audit:
         write_audit(source, output, mapping, plans, MASK_ONLY)

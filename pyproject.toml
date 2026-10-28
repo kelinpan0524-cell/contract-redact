@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contract-redact"
+version = "1.0.0"
+description = "中文合同本地脱敏：换成可还原代号供 AI 审查，或掩码后对外发送"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "contract-redact contributors" }]
+keywords = ["redact", "contract", "privacy", "chinese", "offline", "脱敏", "合同"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Legal Industry",
+  "Natural Language :: Chinese (Simplified)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Topic :: Security",
+]
+# 核心依赖与 requirements.txt 的基础三项保持一致；扫描件 OCR 见 [ocr] 可选组。
+dependencies = [
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+# 装法：pip install "contract-redact[ocr]" / pipx inject contract-redact ...
+ocr = [
+  "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+  "rapidocr-onnxruntime>=1.3; sys_platform != 'darwin'",
+]
+
+[project.scripts]
+contract-redact = "redact_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kelinpan0524-cell/contract-redact"
+
+[tool.setuptools]
+# 代码是平铺的顶层模块（redact_cli 里直接 import checker/redact/restore/service），
+# 不改成包，避免动到任何现有 import 和子命令行为。
+py-modules = [
+  "redact_cli",
+  "checker",
+  "service",
+  "redact",
+  "restore",
+  "formats",
+  "candidates",
+  "mapping_crypto",
+  "ocr",
+]
+
+[tool.setuptools.data-files]
+# data/ 是随包分发的只读数据目录（内置词表、示例配置等），装到 <prefix>/share/contract-redact/data
+"share/contract-redact/data" = ["data/*"]
